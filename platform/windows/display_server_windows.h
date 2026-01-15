@@ -433,6 +433,15 @@ class DisplayServerWindows : public DisplayServer {
 		Rect2i parent_safe_rect;
 	};
 
+	// // frame counter
+	uint64_t last_mouse_event = UINT64_MAX;
+	// Buffer once per frame
+	uint64_t last_frame = UINT64_MAX;
+	// for Mouse
+	HWND mouse_hwnd;
+	WindowID mouse_window_id;
+	WPARAM mouse_wparam;
+
 	JoypadWindows *joypad = nullptr;
 	HHOOK mouse_monitor = nullptr;
 	List<WindowID> popup_list;
@@ -486,6 +495,7 @@ class DisplayServerWindows : public DisplayServer {
 
 	void _process_activate_event(WindowID p_window_id, WPARAM wParam, LPARAM lParam);
 	void _process_key_events();
+	LRESULT _process_mouse_events(HWND hWnd, WindowID window_id, WPARAM wParam);
 
 	static void _dispatch_input_events(const Ref<InputEvent> &p_event);
 	void _dispatch_input_event(const Ref<InputEvent> &p_event);

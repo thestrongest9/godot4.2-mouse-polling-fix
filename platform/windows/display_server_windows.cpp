@@ -31,6 +31,9 @@
 #include "display_server_windows.h"
 
 #include "os_windows.h"
+#define WIN32_LEAN_AND_MEAN
+#include "windows.h"
+#include "winuser.h"
 #include "wgl_detect_version.h"
 
 #include "core/config/project_settings.h"
@@ -2399,6 +2402,13 @@ void DisplayServerWindows::process_events() {
 
 	if (!drop_events) {
 		_process_key_events();
+		// Only do one raw input per frame???
+		uint64_t curr_frame = Engine::get_singleton()->get_process_frames();
+		if (curr_frame != last_frame) {
+			// Input::get_singleton()->flush_buffered_events();
+			_process_mouse_events(mouse_hwnd, mouse_window_id, mouse_wparam);
+			last_frame = curr_frame;
+		}
 		Input::get_singleton()->flush_buffered_events();
 	}
 }
@@ -3127,71 +3137,92 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 
 			UINT dwSize;
 
-			GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &dwSize, sizeof(RAWINPUTHEADER));
-			LPBYTE lpb = new BYTE[dwSize];
-			if (lpb == nullptr) {
-				return 0;
-			}
+			// Note: Replace GetRawInputData -> GetRawInputBuffer
+			// Allocate
+			PRAWINPUT raw_input_buffer = nullptr;
+			UINT buffer_size = sizeof(RAWINPUTHEADER) * 5; // magic number
+			raw_input_buffer = (PRAWINPUT) new BYTE[buffer_size];
+			if (raw_input_buffer == nullptr) break;
 
-			if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, lpb, &dwSize, sizeof(RAWINPUTHEADER)) != dwSize) {
-				OutputDebugString(TEXT("GetRawInputData does not return correct size !\n"));
-			}
+			UINT raw_input_count = GetRawInputBuffer(raw_input_buffer, &buffer_size, sizeof(RAWINPUTHEADER));
 
-			RAWINPUT *raw = (RAWINPUT *)lpb;
+			// GetRawInputData((HRAWINPUT)lParam, RID_INPUT, nullptr, &dwSize, sizeof(RAWINPUTHEADER));
+			// LPBYTE lpb = new BYTE[dwSize];
+			// if (lpb == nullptr) {
+			// 	return 0;
+			// }
 
-			if (raw->header.dwType == RIM_TYPEMOUSE) {
-				Ref<InputEventMouseMotion> mm;
-				mm.instantiate();
+			// if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, lpb, &dwSize, sizeof(RAWINPUTHEADER)) != dwSize) {
+			// 	OutputDebugString(TEXT("GetRawInputData does not return correct size !\n"));
+			// }
 
-				mm->set_window_id(window_id);
-				mm->set_ctrl_pressed(control_mem);
-				mm->set_shift_pressed(shift_mem);
-				mm->set_alt_pressed(alt_mem);
+			print_line("RAW INPUT COUNT: ", raw_input_count);
 
-				mm->set_pressure((raw->data.mouse.ulButtons & RI_MOUSE_LEFT_BUTTON_DOWN) ? 1.0f : 0.0f);
+			if (raw_input_count > 0) {
+				// RAWINPUT *raw = (RAWINPUT *)lpb;
+				RAWINPUT *raw = raw_input_buffer;
+				for (UINT i = 0; i < raw_input_count; ++i) {
+					if (raw->header.dwType == RIM_TYPEMOUSE) {
+						Ref<InputEventMouseMotion> mm;
+						mm.instantiate();
 
-				mm->set_button_mask(last_button_state);
+						mm->set_window_id(window_id);
+						mm->set_ctrl_pressed(control_mem);
+						mm->set_shift_pressed(shift_mem);
+						mm->set_alt_pressed(alt_mem);
 
-				Point2i c(windows[window_id].width / 2, windows[window_id].height / 2);
+						mm->set_pressure((raw->data.mouse.ulButtons & RI_MOUSE_LEFT_BUTTON_DOWN) ? 1.0f : 0.0f);
 
-				// Centering just so it works as before.
-				POINT pos = { (int)c.x, (int)c.y };
-				ClientToScreen(windows[window_id].hWnd, &pos);
-				SetCursorPos(pos.x, pos.y);
+						mm->set_button_mask(last_button_state);
 
-				mm->set_position(c);
-				mm->set_global_position(c);
-				mm->set_velocity(Vector2(0, 0));
+						Point2i c(windows[window_id].width / 2, windows[window_id].height / 2);
 
-				if (raw->data.mouse.usFlags == MOUSE_MOVE_RELATIVE) {
-					mm->set_relative(Vector2(raw->data.mouse.lLastX, raw->data.mouse.lLastY));
+						// Centering just so it works as before.
+						POINT pos = { (int)c.x, (int)c.y };
+						ClientToScreen(windows[window_id].hWnd, &pos);
+						SetCursorPos(pos.x, pos.y);
 
-				} else if (raw->data.mouse.usFlags == MOUSE_MOVE_ABSOLUTE) {
-					int nScreenWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-					int nScreenHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-					int nScreenLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
-					int nScreenTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
+						mm->set_position(c);
+						mm->set_global_position(c);
+						mm->set_velocity(Vector2(0, 0));
 
-					Vector2 abs_pos(
-							(double(raw->data.mouse.lLastX) - 65536.0 / (nScreenWidth)) * nScreenWidth / 65536.0 + nScreenLeft,
-							(double(raw->data.mouse.lLastY) - 65536.0 / (nScreenHeight)) * nScreenHeight / 65536.0 + nScreenTop);
+						if (raw->data.mouse.usFlags == MOUSE_MOVE_RELATIVE) {
+							mm->set_relative(Vector2(raw->data.mouse.lLastX, raw->data.mouse.lLastY));
 
-					POINT coords; // Client coords.
-					coords.x = abs_pos.x;
-					coords.y = abs_pos.y;
+						} else if (raw->data.mouse.usFlags == MOUSE_MOVE_ABSOLUTE) {
+							int nScreenWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+							int nScreenHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+							int nScreenLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
+							int nScreenTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
 
-					ScreenToClient(hWnd, &coords);
+							Vector2 abs_pos(
+									(double(raw->data.mouse.lLastX) - 65536.0 / (nScreenWidth)) * nScreenWidth / 65536.0 + nScreenLeft,
+									(double(raw->data.mouse.lLastY) - 65536.0 / (nScreenHeight)) * nScreenHeight / 65536.0 + nScreenTop);
 
-					mm->set_relative(Vector2(coords.x - old_x, coords.y - old_y));
-					old_x = coords.x;
-					old_y = coords.y;
+							POINT coords; // Client coords.
+							coords.x = abs_pos.x;
+							coords.y = abs_pos.y;
+
+							ScreenToClient(hWnd, &coords);
+
+							mm->set_relative(Vector2(coords.x - old_x, coords.y - old_y));
+							old_x = coords.x;
+							old_y = coords.y;
+						}
+
+						if ((windows[window_id].window_has_focus || windows[window_id].is_popup) && mm->get_relative() != Vector2()) {
+							Input::get_singleton()->parse_input_event(mm);
+						}
+					}
+					// raw = NEXTRAWINPUTBLOCK(raw);
+					raw = (PRAWINPUT)((BYTE*)raw + raw->header.dwSize);
 				}
-
-				if ((windows[window_id].window_has_focus || windows[window_id].is_popup) && mm->get_relative() != Vector2()) {
-					Input::get_singleton()->parse_input_event(mm);
-				}
 			}
-			delete[] lpb;
+			// delete[] lpb;
+			// Deallocate buffer
+			delete[] raw_input_buffer;
+			raw_input_buffer = nullptr;
+
 		} break;
 		case WT_CSRCHANGE:
 		case WT_PROXIMITY: {
@@ -3437,6 +3468,15 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			return 0; // Pointer event handled return 0 to avoid duplicate WM_MOUSEMOVE event.
 		} break;
 		case WM_MOUSEMOVE: {
+			// Only do one raw input per frame???
+			uint64_t curr_frame = Engine::get_singleton()->get_process_frames();
+			// if (curr_frame != last_mouse_event) {
+			if (curr_frame != last_mouse_event) {
+				last_mouse_event = curr_frame;
+			} else {
+				break;
+			}
+
 			if (windows[window_id].block_mm) {
 				break;
 			}
@@ -3453,109 +3493,122 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				}
 			}
 
-			DisplayServer::WindowID over_id = get_window_at_screen_position(mouse_get_position());
-			if (windows.has(over_id) && !Rect2(window_get_position(over_id), Point2(windows[over_id].width, windows[over_id].height)).has_point(mouse_get_position())) {
-				// Don't consider the windowborder as part of the window.
-				over_id = INVALID_WINDOW_ID;
-			}
-			if (window_mouseover_id != over_id) {
-				// Mouse enter.
+			int x = GET_X_LPARAM(lParam);
+			int y = GET_Y_LPARAM(lParam);
+			old_x = x - old_x;
+			old_y = y - old_y;
 
-				if (mouse_mode != MOUSE_MODE_CAPTURED) {
-					if (window_mouseover_id != INVALID_WINDOW_ID && windows.has(window_mouseover_id)) {
-						// Leave previous window.
-						_send_window_event(windows[window_mouseover_id], WINDOW_EVENT_MOUSE_EXIT);
-					}
+			mouse_hwnd = hWnd;
+			mouse_window_id = window_id;
+			mouse_wparam = wParam;
 
-					if (over_id != INVALID_WINDOW_ID && windows.has(over_id)) {
-						_send_window_event(windows[over_id], WINDOW_EVENT_MOUSE_ENTER);
-					}
-				}
+			// _process_mouse_events(hWnd, window_id, wParam, lParam);
 
-				CursorShape c = cursor_shape;
-				cursor_shape = CURSOR_MAX;
-				cursor_set_shape(c);
-				window_mouseover_id = over_id;
+			break;
 
-				// Once-off notification, must call again.
-				track_mouse_leave_event(hWnd);
-			}
+			// DisplayServer::WindowID over_id = get_window_at_screen_position(mouse_get_position());
+			// if (windows.has(over_id) && !Rect2(window_get_position(over_id), Point2(windows[over_id].width, windows[over_id].height)).has_point(mouse_get_position())) {
+			// 	// Don't consider the windowborder as part of the window.
+			// 	over_id = INVALID_WINDOW_ID;
+			// }
+			// if (window_mouseover_id != over_id) {
+			// 	// Mouse enter.
 
-			// Don't calculate relative mouse movement if we don't have focus in CAPTURED mode.
-			if (!windows[window_id].window_has_focus && mouse_mode == MOUSE_MODE_CAPTURED) {
-				break;
-			}
+			// 	if (mouse_mode != MOUSE_MODE_CAPTURED) {
+			// 		if (window_mouseover_id != INVALID_WINDOW_ID && windows.has(window_mouseover_id)) {
+			// 			// Leave previous window.
+			// 			_send_window_event(windows[window_mouseover_id], WINDOW_EVENT_MOUSE_EXIT);
+			// 		}
 
-			DisplayServer::WindowID receiving_window_id = _get_focused_window_or_popup();
-			if (receiving_window_id == INVALID_WINDOW_ID) {
-				receiving_window_id = window_id;
-			}
-			Ref<InputEventMouseMotion> mm;
-			mm.instantiate();
-			mm->set_window_id(receiving_window_id);
-			mm->set_ctrl_pressed((wParam & MK_CONTROL) != 0);
-			mm->set_shift_pressed((wParam & MK_SHIFT) != 0);
-			mm->set_alt_pressed(alt_mem);
+			// 		if (over_id != INVALID_WINDOW_ID && windows.has(over_id)) {
+			// 			_send_window_event(windows[over_id], WINDOW_EVENT_MOUSE_ENTER);
+			// 		}
+			// 	}
 
-			if ((tablet_get_current_driver() == "wintab") && wintab_available && windows[window_id].wtctx) {
-				// Note: WinTab sends both WT_PACKET and WM_xBUTTONDOWN/UP/MOUSEMOVE events, use mouse 1/0 pressure only when last_pressure was not updated recently.
-				if (windows[window_id].last_pressure_update < 10) {
-					windows[window_id].last_pressure_update++;
-				} else {
-					windows[window_id].last_tilt = Vector2();
-					windows[window_id].last_pressure = (wParam & MK_LBUTTON) ? 1.0f : 0.0f;
-					windows[window_id].last_pen_inverted = false;
-				}
-			} else {
-				windows[window_id].last_tilt = Vector2();
-				windows[window_id].last_pressure = (wParam & MK_LBUTTON) ? 1.0f : 0.0f;
-				windows[window_id].last_pen_inverted = false;
-			}
+			// 	CursorShape c = cursor_shape;
+			// 	cursor_shape = CURSOR_MAX;
+			// 	cursor_set_shape(c);
+			// 	window_mouseover_id = over_id;
 
-			mm->set_pressure(windows[window_id].last_pressure);
-			mm->set_tilt(windows[window_id].last_tilt);
-			mm->set_pen_inverted(windows[window_id].last_pen_inverted);
+			// 	// Once-off notification, must call again.
+			// 	track_mouse_leave_event(hWnd);
+			// }
 
-			mm->set_button_mask(last_button_state);
+			// // Don't calculate relative mouse movement if we don't have focus in CAPTURED mode.
+			// if (!windows[window_id].window_has_focus && mouse_mode == MOUSE_MODE_CAPTURED) {
+			// 	break;
+			// }
 
-			mm->set_position(Vector2(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
-			mm->set_global_position(Vector2(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
+			// DisplayServer::WindowID receiving_window_id = _get_focused_window_or_popup();
+			// if (receiving_window_id == INVALID_WINDOW_ID) {
+			// 	receiving_window_id = window_id;
+			// }
+			// Ref<InputEventMouseMotion> mm;
+			// mm.instantiate();
+			// mm->set_window_id(receiving_window_id);
+			// mm->set_ctrl_pressed((wParam & MK_CONTROL) != 0);
+			// mm->set_shift_pressed((wParam & MK_SHIFT) != 0);
+			// mm->set_alt_pressed(alt_mem);
 
-			if (mouse_mode == MOUSE_MODE_CAPTURED) {
-				Point2i c(windows[window_id].width / 2, windows[window_id].height / 2);
-				old_x = c.x;
-				old_y = c.y;
+			// if ((tablet_get_current_driver() == "wintab") && wintab_available && windows[window_id].wtctx) {
+			// 	// Note: WinTab sends both WT_PACKET and WM_xBUTTONDOWN/UP/MOUSEMOVE events, use mouse 1/0 pressure only when last_pressure was not updated recently.
+			// 	if (windows[window_id].last_pressure_update < 10) {
+			// 		windows[window_id].last_pressure_update++;
+			// 	} else {
+			// 		windows[window_id].last_tilt = Vector2();
+			// 		windows[window_id].last_pressure = (wParam & MK_LBUTTON) ? 1.0f : 0.0f;
+			// 		windows[window_id].last_pen_inverted = false;
+			// 	}
+			// } else {
+			// 	windows[window_id].last_tilt = Vector2();
+			// 	windows[window_id].last_pressure = (wParam & MK_LBUTTON) ? 1.0f : 0.0f;
+			// 	windows[window_id].last_pen_inverted = false;
+			// }
 
-				if (mm->get_position() == c) {
-					center = c;
-					return 0;
-				}
+			// mm->set_pressure(windows[window_id].last_pressure);
+			// mm->set_tilt(windows[window_id].last_tilt);
+			// mm->set_pen_inverted(windows[window_id].last_pen_inverted);
 
-				Point2i ncenter = mm->get_position();
-				center = ncenter;
-				POINT pos = { (int)c.x, (int)c.y };
-				ClientToScreen(windows[window_id].hWnd, &pos);
-				SetCursorPos(pos.x, pos.y);
-			}
+			// mm->set_button_mask(last_button_state);
 
-			mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
+			// mm->set_position(Vector2(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
+			// mm->set_global_position(Vector2(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
 
-			if (old_invalid) {
-				old_x = mm->get_position().x;
-				old_y = mm->get_position().y;
-				old_invalid = false;
-			}
+			// if (mouse_mode == MOUSE_MODE_CAPTURED) {
+			// 	Point2i c(windows[window_id].width / 2, windows[window_id].height / 2);
+			// 	old_x = c.x;
+			// 	old_y = c.y;
 
-			mm->set_relative(Vector2(mm->get_position() - Vector2(old_x, old_y)));
-			old_x = mm->get_position().x;
-			old_y = mm->get_position().y;
+			// 	if (mm->get_position() == c) {
+			// 		center = c;
+			// 		return 0;
+			// 	}
 
-			if (receiving_window_id != window_id) {
-				// Adjust event position relative to window distance when event is sent to a different window.
-				mm->set_position(mm->get_position() - window_get_position(receiving_window_id) + window_get_position(window_id));
-				mm->set_global_position(mm->get_position());
-			}
-			Input::get_singleton()->parse_input_event(mm);
+			// 	Point2i ncenter = mm->get_position();
+			// 	center = ncenter;
+			// 	POINT pos = { (int)c.x, (int)c.y };
+			// 	ClientToScreen(windows[window_id].hWnd, &pos);
+			// 	SetCursorPos(pos.x, pos.y);
+			// }
+
+			// mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
+
+			// if (old_invalid) {
+			// 	old_x = mm->get_position().x;
+			// 	old_y = mm->get_position().y;
+			// 	old_invalid = false;
+			// }
+
+			// mm->set_relative(Vector2(mm->get_position() - Vector2(old_x, old_y)));
+			// old_x = mm->get_position().x;
+			// old_y = mm->get_position().y;
+
+			// if (receiving_window_id != window_id) {
+			// 	// Adjust event position relative to window distance when event is sent to a different window.
+			// 	mm->set_position(mm->get_position() - window_get_position(receiving_window_id) + window_get_position(window_id));
+			// 	mm->set_global_position(mm->get_position());
+			// }
+			// Input::get_singleton()->parse_input_event(mm);
 
 		} break;
 		case WM_LBUTTONDOWN:
@@ -4057,6 +4110,92 @@ void DisplayServerWindows::_process_activate_event(WindowID p_window_id, WPARAM 
 	if ((tablet_get_current_driver() == "wintab") && wintab_available && windows[p_window_id].wtctx) {
 		wintab_WTEnable(windows[p_window_id].wtctx, GET_WM_ACTIVATE_STATE(wParam, lParam));
 	}
+}
+
+// LRESULT DisplayServerWindows::_process_mouse_events(HWND hWnd, WindowID window_id, WPARAM wParam, LPARAM lParam) {
+LRESULT DisplayServerWindows::_process_mouse_events(HWND hWnd, WindowID window_id, WPARAM wParam) {
+	DisplayServer::WindowID over_id = get_window_at_screen_position(mouse_get_position());
+	if (windows.has(over_id) && !Rect2(window_get_position(over_id), Point2(windows[over_id].width, windows[over_id].height)).has_point(mouse_get_position())) {
+		// Don't consider the windowborder as part of the window.
+		over_id = INVALID_WINDOW_ID;
+	}
+	if (window_mouseover_id != over_id) {
+		// Mouse enter.
+
+		if (mouse_mode != MOUSE_MODE_CAPTURED) {
+			if (window_mouseover_id != INVALID_WINDOW_ID && windows.has(window_mouseover_id)) {
+				// Leave previous window.
+				_send_window_event(windows[window_mouseover_id], WINDOW_EVENT_MOUSE_EXIT);
+			}
+
+			if (over_id != INVALID_WINDOW_ID && windows.has(over_id)) {
+				_send_window_event(windows[over_id], WINDOW_EVENT_MOUSE_ENTER);
+			}
+		}
+
+		CursorShape c = cursor_shape;
+		cursor_shape = CURSOR_MAX;
+		cursor_set_shape(c);
+		window_mouseover_id = over_id;
+
+		// Once-off notification, must call again.
+		track_mouse_leave_event(hWnd);
+	}
+
+	// Don't calculate relative mouse movement if we don't have focus in CAPTURED mode.
+	if (!windows[window_id].window_has_focus && mouse_mode == MOUSE_MODE_CAPTURED) {
+		return 0;
+	}
+	
+	DisplayServer::WindowID receiving_window_id = _get_focused_window_or_popup();
+	if (receiving_window_id == INVALID_WINDOW_ID) {
+		receiving_window_id = window_id;
+	}
+	Ref<InputEventMouseMotion> mm;
+	mm.instantiate();
+	mm->set_window_id(receiving_window_id);
+	mm->set_ctrl_pressed((wParam & MK_CONTROL) != 0);
+	mm->set_shift_pressed((wParam & MK_SHIFT) != 0);
+	mm->set_alt_pressed(alt_mem);
+
+	mm->set_pressure(windows[window_id].last_pressure);
+	mm->set_tilt(windows[window_id].last_tilt);
+	mm->set_pen_inverted(windows[window_id].last_pen_inverted);
+
+	mm->set_button_mask(last_button_state);
+
+	mm->set_position(Vector2(old_x, old_y));
+	mm->set_global_position(Vector2(old_x, old_y));
+	// mm->set_position(Vector2(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
+	// mm->set_global_position(Vector2(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
+
+	if (mouse_mode == MOUSE_MODE_CAPTURED) {
+		Point2i c(windows[window_id].width / 2, windows[window_id].height / 2);
+		old_x = c.x;
+		old_y = c.y;
+
+		if (mm->get_position() == c) {
+			center = c;
+			return 0;
+		}
+
+		Point2i ncenter = mm->get_position();
+		center = ncenter;
+		POINT pos = { (int)c.x, (int)c.y };
+		ClientToScreen(windows[window_id].hWnd, &pos);
+		SetCursorPos(pos.x, pos.y);
+	}
+
+	mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
+
+	if (receiving_window_id != window_id) {
+		// Adjust event position relative to window distance when event is sent to a different window.
+		mm->set_position(mm->get_position() - window_get_position(receiving_window_id) + window_get_position(window_id));
+		mm->set_global_position(mm->get_position());
+	}
+	Input::get_singleton()->parse_input_event(mm);
+
+	return 0;
 }
 
 void DisplayServerWindows::_process_key_events() {
