@@ -2391,8 +2391,18 @@ void DisplayServerWindows::process_events() {
 	if (!drop_events) {
 		joypad->process_joypads();
 	}
-
-	while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+	uint64_t start = OS::get_singleton()->get_ticks_msec();
+	while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE | QS_MOUSEMOVE)) {
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+		if (OS::get_singleton()->get_ticks_msec() - start >= 2) break;
+	}
+	
+	// Just check for everything other than WM_MOUSEMOVE (which is overloading queue by sending thousands of messages)
+	// https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-peekmessagew
+	// https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getqueuestatus
+	// Process everything outside of mouse events
+	while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE | ~QS_MOUSEMOVE)) {
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
 	}
@@ -2896,9 +2906,17 @@ LRESULT DisplayServerWindows::_handle_early_window_message(HWND hWnd, UINT uMsg,
 	return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
 
+LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	// Use this function to process certain messages before
+	// sending them over to the helper where it will be sent
+	// to the engine proper.
+	return WndProcHelper(hWnd, uMsg, wParam, lParam);
+}
+
 // The window procedure for our window class "Engine", used to handle processing of window-related system messages/events.
 // See: https://docs.microsoft.com/en-us/windows/win32/winmsg/window-procedures
-LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+// LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+LRESULT DisplayServerWindows::WndProcHelper(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	if (drop_events) {
 		if (user_proc) {
 			return CallWindowProcW(user_proc, hWnd, uMsg, wParam, lParam);

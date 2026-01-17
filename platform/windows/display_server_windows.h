@@ -496,6 +496,7 @@ class DisplayServerWindows : public DisplayServer {
 public:
 	LRESULT WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 	LRESULT MouseProc(int code, WPARAM wParam, LPARAM lParam);
+	LRESULT WndProcHelper(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 	void popup_open(WindowID p_window);
 	void popup_close(WindowID p_window);
